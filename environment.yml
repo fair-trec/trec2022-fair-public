@@ -8,11 +8,14 @@ dependencies:
 - tqdm
 - numpy>=1.17
 - pandas>=1.2
+- numba
+- pyarrow
 - seedbank
 - binpickle
 - scipy
 - seaborn
 - xarray
+- netcdf4
 - pandas
 - notebook
 - jupyterlab>=3.0
@@ -24,3 +27,5 @@ dependencies:
 - pip:
   - mwxml
   - natural
+  - mwparserfromhell
+  - mpipe

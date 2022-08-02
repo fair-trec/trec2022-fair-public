@@ -39,23 +39,6 @@ def load_dump(dump_file: Path):
                 yield page.id, page.title, text
 
 
-@contextmanager
-def open_compress_7z(file: Path):
-    if file.exists():
-        file.unlink()
-
-    cmd = ['7z', 'a', fspath(file), '-tgzip', f'-si{file.stem}', '-bd', '-mx=9']
-    _log.info('running %s', ' '.join(cmd))
-    child = sp.Popen(cmd, stdin=sp.PIPE)
-    
-    yield jsf
-    jsf.close()
-    result = child.wait()
-    if result:
-        _log.error('compressor exited with error %d', result)
-        sys.exit(2)
-
-
 def process_dump(dump_file: Path, json_file: Path):
     _log.info('saving to %s', json_file)
 

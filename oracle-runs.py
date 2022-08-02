@@ -15,6 +15,12 @@ Options:
         Write output to FILE.
     -p PREC, --precision=PREC
         Produce results with the specified precision [default: 0.9].
+    --task1
+        Create runs for Task 1.
+    --task2
+        Create runs for Task 2 (sequences).
+    --eval-topics
+        Use eval topics instead of training topics.
 """
 
 import sys
@@ -30,16 +36,19 @@ _log = logging.getLogger('oracle-runs')
 
 
 def load_metadata():
-    meta_f = Path('data/trec_metadata.json.gz')
+    meta_f = Path('data/trec_2022_articles.parquet')
     _log.info('reading %s', meta_f)
-    meta = pd.read_json(meta_f, lines=True, compression='gzip')
-    return meta.set_index('page_id')
+    meta = pd.read_parquet(meta_f, columns=['first_letter'])
+    # make sure we have the right index
+    assert meta.index.name == 'page_id'
+    return meta
 
 
-def load_topics():
-    topic_f = Path('data/trec_topics.json.gz')
+def load_topics(opts):
+    key = 'eval' if opts['--eval-topics'] else 'train'
+    topic_f = Path(f'data/trec_2022_{key}_reldocs.jsonl')
     _log.info('reading %s', topic_f)
-    topics = pd.read_json(topic_f, lines=True, compression='gzip')
+    topics = pd.read_json(topic_f, lines=True)
     return topics
 
 
@@ -61,7 +70,7 @@ def sample_docs(rng, meta, rel, n, prec):
 
 def task1_run(opts, meta, topics):
     rng = np.random.default_rng()
-    rank_len = 1000
+    rank_len = 500
     prec = float(opts['--precision'])
 
     rels = topics[['id', 'rel_docs']].set_index('id').explode('rel_docs')
@@ -69,7 +78,7 @@ def task1_run(opts, meta, topics):
     def sample(df):
         return sample_docs(rng, meta, df['rel_docs'], rank_len, prec)
     
-    runs = rels.groupby('id').apply(sample)
+    runs = rels.groupby('id').progress_apply(sample)
     runs.columns.name = 'rank'
     runs = runs.stack().reset_index(name='page_id')
     _log.info('sample runs:\n%s', runs)
@@ -78,7 +87,7 @@ def task1_run(opts, meta, topics):
 
 def task2_run(opts, meta, topics):
     rng = np.random.default_rng()
-    rank_len = 50
+    rank_len = 20
     run_count = 100
     prec = float(opts['--precision'])
 
@@ -106,14 +115,14 @@ def main(opts):
     tqdm.pandas(leave=False)
 
     meta = load_metadata()
-    topics = load_topics()
+    topics = load_topics(opts)
 
     if opts['--task1']:
         runs = task1_run(opts, meta, topics)
-        dft_out = 'task1.tsv'
+        dft_out = 'runs/2022/task1.tsv'
     elif opts['--task2']:
         runs = task2_run(opts, meta, topics)
-        dft_out = 'task2.tsv'
+        dft_out = 'runs/2022/task2.tsv'
     else:
         raise ValueError('no task specified')
     
