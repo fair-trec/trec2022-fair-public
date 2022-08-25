@@ -196,7 +196,6 @@ page_quality = page_quality.to_frame()
 from wptrec.dimension import FairDim
 
 # %%
-
 dimensions = [
     FairDim(sub_geo_align, sub_geo_xr, world_pop, True),
     FairDim(src_geo_align, src_geo_xr, world_pop, True),
@@ -207,3 +206,6 @@ dimensions = [
     FairDim(pop_align, pop_xr),
     FairDim(langs_align, langs_xr),
 ]
+
+# %%
+dimensions

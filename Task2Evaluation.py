@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.13.8
+#       jupytext_version: 1.14.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -18,6 +18,13 @@
 #
 # This notebook contains the evaluation for Task 1 of the TREC Fair Ranking track.
 
+# %% tags=["parameters"]
+DATA_MODE = 'train'
+
+# %% tags=[]
+import wptrec
+wptrec.DATA_MODE = DATA_MODE
+
 # %% [markdown]
 # ## Setup
 #
@@ -27,11 +34,15 @@
 from pathlib import Path
 import pandas as pd
 import numpy as np
+import xarray as xr
 from scipy.stats import bootstrap
 import matplotlib.pyplot as plt
 import seaborn as sns
 import gzip
 import binpickle
+
+# %%
+tbl_dir = Path('data/metric-tables/')
 
 # %% [markdown]
 # Set up progress bar and logging support:
@@ -43,7 +54,7 @@ tqdm.pandas(leave=False)
 # %% tags=[]
 import sys, logging
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-log = logging.getLogger('task1-eval')
+log = logging.getLogger('task2-eval')
 
 # %% [markdown]
 # Set up the RNG:
@@ -55,6 +66,20 @@ rng = seedbank.numpy_rng()
 
 # %% [markdown]
 # Import metric code:
+
+# %% tags=[]
+import wptrec.metrics as metrics
+from wptrec.trecdata import scan_runs
+
+# %% [markdown]
+# And finally import the metric itself.  For Task 1, this uses:
+#
+# * evaluation qrels
+# * evaluation intersectional targets
+# * all dimensions (with their page alignments)
+
+# %% tags=[]
+from MetricInputs import qrels, dimensions
 
 # %%
 # %load_ext autoreload
@@ -68,10 +93,10 @@ from wptrec.trecdata import scan_runs
 # And finally import the metric itself:
 
 # %%
-metric = metrics.EELMetric.load('eval-qrels', 'task2-eval-int-targets', 'page-int-align', 'page-quality')
+target = xr.open_dataarray(tbl_dir / f'task2-{DATA_MODE}-int-targets.nc')
 
 # %%
-umetric = metrics.EUEMetric.load('eval-qrels', 'task2-eval-page-targets', 'page-int-align')
+metric = metrics.EELMetric(qrels.set_index('topic_id'), dimensions, target)
 
 # %% [markdown]
 # ## Importing Data
@@ -82,31 +107,11 @@ umetric = metrics.EUEMetric.load('eval-qrels', 'task2-eval-page-targets', 'page-
 # Let's load the runs now:
 
 # %% tags=[]
-runs = pd.DataFrame.from_records(row for (task, rows) in scan_runs('runs/2021') if task == 2 for row in rows)
+runs = pd.DataFrame.from_records(row for (task, rows) in scan_runs('runs/2022') if task == 2 for row in rows)
 runs
 
 # %% tags=[]
 runs.head()
-
-# %% [markdown]
-# We also need to load our topic eval data:
-
-# %% tags=[]
-topics = pd.read_json('data/eval-topics-with-qrels.json.gz', lines=True)
-topics.head()
-
-# %% [markdown]
-# Tier 2 is the top 5 docs of the first 25 rankings.  Further, we didn't complete Tier 2 for all topics.
-
-# %% tags=[]
-t2_topics = topics.loc[topics['max_tier'] >= 2, 'id']
-
-# %% tags=[]
-r_top5 = runs['rank'] <= 5
-r_first25 = runs['seq_no'] <= 25
-r_done = runs['topic_id'].isin(t2_topics)
-runs = runs[r_done & r_top5 & r_first25]
-runs.info()
 
 # %% [markdown]
 # ## Computing Metrics
@@ -114,7 +119,7 @@ runs.info()
 # We are now ready to compute the metric for each (system,topic) pair.  Let's go!
 
 # %% tags=[]
-rank_exp = runs.groupby(['run_name', 'topic_id']).progress_apply(metric)
+rank_exp = runs.groupby(['run_name', 'topic_id']).progress_apply(metric, details=True)
 # rank_exp = rank_awrf.unstack()
 rank_exp
 
@@ -149,54 +154,6 @@ run_score_full = run_scores.join(run_score_ci)
 run_score_full
 
 # %% [markdown]
-# ## Underexposure Scores
-
-# %%
-from wptrec.metrics.under import qrs_page_exposure
-
-# %%
-rank_uexp = runs.groupby(['run_name', 'topic_id']).progress_apply(umetric)
-rank_uexp
-
-# %%
-run_uscores = rank_uexp.groupby('run_name').mean()
-run_uscores
-
-# %% [markdown]
-# ## Analyzing Scores
-#
-# What is the distribution of scores?
-
-# %% tags=[]
-run_scores.describe()
-
-# %% tags=[]
-sns.displot(x='EE-L', data=run_scores)
-plt.savefig('figures/task1-eel-dist.pdf')
-plt.show()
-
-# %%
-run_tbl_df = run_score_full[['EE-R', 'EE-D', 'EE-L']].copy()
-run_tbl_df['EE-L 95% CI'] = run_score_full.apply(lambda r: "(%.3f, %.3f)" % (r['EE-L.Lo'], r['EE-L.Hi']), axis=1)
-run_tbl_df
-
-# %% tags=[]
-run_tbl_df.sort_values('EE-L', ascending=True, inplace=True)
-run_tbl_df
-
-# %% tags=[]
-run_tbl_fn = Path('figures/task2-runs.tex')
-run_tbl = run_tbl_df.to_latex(float_format="%.4f", bold_rows=True, index_names=False)
-run_tbl_fn.write_text(run_tbl)
-print(run_tbl)
-
-# %% tags=[]
-sns.relplot(x='EE-R', y='EE-D', data=run_scores)
-sns.rugplot(x='EE-R', y='EE-D', data=run_scores)
-plt.savefig('figures/task2-eed-eer.pdf')
-plt.show()
-
-# %% [markdown]
 # ## Per-Topic Stats
 #
 # We need to return per-topic stats to each participant, at least for the score.
@@ -218,10 +175,67 @@ topic_range
 
 # %% tags=[]
 ret_dir = Path('results')
-for system, runs in rank_exp.groupby('run_name'):
-    aug = runs.join(topic_range).reset_index().drop(columns=['run_name'])
+for system, s_runs in rank_exp.groupby('run_name'):
+    aug = s_runs.join(topic_range).reset_index().drop(columns=['run_name'])
     fn = ret_dir / f'{system}.tsv'
     log.info('writing %s', fn)
     aug.to_csv(fn, sep='\t', index=False)
+
+# %% [markdown]
+# ## Further Analysis
+#
+# That's how we capture the first-order analysis. Now let's look at things one dimension at a time.
+
+# %% [markdown]
+# ### Gender
+#
+# Let's just look at gender.
+
+# %%
+gender_tgt = pd.read_parquet(tbl_dir / f'task2-{DATA_MODE}-gender-target.parquet')
+gender_tgt.head()
+
+# %%
+gender_tgt = xr.DataArray(gender_tgt.values, coords=[gender_tgt.index, gender_tgt.columns], dims=['topic_id', 'gender'])
+gender_tgt
+
+# %%
+gender_metric = metrics.EELMetric(qrels.set_index('topic_id'), dimensions[2:3], gender_tgt)
+
+# %%
+rank_gender = runs.groupby(['run_name', 'topic_id']).progress_apply(gender_metric)
+rank_gender
+
+# %% [markdown]
+# And aggregate:
+
+# %%
+rank_gender.groupby('run_name').mean()
+
+# %% [markdown]
+# ### Subject Geography
+#
+# And now subject geography.
+
+# %%
+sub_geo_tgt = pd.read_parquet(tbl_dir / f'task2-{DATA_MODE}-sub-geo-target.parquet')
+sub_geo_tgt.head()
+
+# %%
+sub_geo_tgt = xr.DataArray(sub_geo_tgt.values, coords=[sub_geo_tgt.index, sub_geo_tgt.columns], dims=['topic_id', 'sub-geo'])
+sub_geo_tgt
+
+# %%
+sub_geo_metric = metrics.EELMetric(qrels.set_index('topic_id'), [d for d in dimensions if d.name == 'sub-geo'], sub_geo_tgt)
+
+# %%
+rank_sub_geo = runs.groupby(['run_name', 'topic_id']).progress_apply(sub_geo_metric)
+rank_sub_geo
+
+# %% [markdown]
+# And aggregate:
+
+# %%
+rank_sub_geo.groupby('run_name').mean()
 
 # %%

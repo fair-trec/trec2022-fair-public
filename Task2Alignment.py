@@ -17,7 +17,7 @@
 # # Task 2 Alignment
 #
 # This notebook computes the target distributions and retrieved page alignments for **Task 2**.
-# It depends on the output of the PageAlignments notebook.
+# It depends on the output of the PageAlignments notebook, as imported by MetricInputs.
 
 # %% [markdown]
 # This notebook can be run in two modes: 'train', to process the training topics, and 'eval' for the eval topics.
@@ -32,6 +32,10 @@ DATA_MODE = 'train'
 
 # %% tags=[]
 import sys
+import operator
+from functools import reduce
+from itertools import product
+from collections import namedtuple
 from pathlib import Path
 import pandas as pd
 import xarray as xr
@@ -63,6 +67,7 @@ output = OutRepo('data/metric-tables')
 
 # %%
 from wptrec import metrics
+from wptrec.dimension import sum_outer
 
 # %% [markdown]
 # ## Data and Helpers
@@ -168,26 +173,28 @@ qr_sub_geo_align = qr_join(sub_geo_align)
 qr_sub_geo_align
 
 # %% [markdown]
-# We can just average with the world pop, with a bit of normalization.
+# Compute a raw target, factoring in weights:
 
 # %%
-qr_sub_geo_tgt = qr_sub_geo_align.groupby('topic_id').sum()
-qr_sub_geo_tgt = qr_sub_geo_tgt.iloc[:, 1:]
-qr_sub_geo_tgt = norm_dist_df(qr_sub_geo_tgt)
-qr_sub_geo_tgt = (qr_sub_geo_tgt + world_pop) * 0.5
+qr_sub_geo_tgt = qr_sub_geo_align.multiply(qp_exp, axis='rows').groupby('topic_id').sum()
+
+# %% [markdown]
+# And now we need to average the known-geo with the background.
+
+# %%
+qr_sub_geo_fk = qr_sub_geo_tgt.iloc[:, 1:].sum('columns')
+qr_sub_geo_tgt.iloc[:, 1:] *= 0.5
+qr_sub_geo_tgt.iloc[:, 1:] += qr_sub_geo_fk.apply(lambda k: world_pop * k * 0.5)
 qr_sub_geo_tgt.head()
 
 # %% [markdown]
-# Make sure the rows are distributions:
+# These are **not** distributions, let's fix that!
 
 # %%
-qr_sub_geo_tgt.sum('columns').describe()
-
-# %% [markdown]
-# Everything is 1, we're good to go!
+qr_sub_geo_tgt = norm_dist_df(qr_sub_geo_tgt)
 
 # %%
-output.save_table(qr_sub_geo_tgt, f'task1-{DATA_MODE}-sub-geo-target', parquet=True)
+output.save_table(qr_sub_geo_tgt, f'task2-{DATA_MODE}-sub-geo-target', parquet=True)
 
 # %% [markdown]
 # ## Source Geography
@@ -199,44 +206,49 @@ qr_src_geo_align = qr_join(src_geo_align)
 qr_src_geo_align
 
 # %% [markdown]
-# For purely geographic fairness, the target is easy - average with world pop.
+# And now we repeat these computations!
 
 # %%
-qr_src_geo_tgt = qr_src_geo_align.groupby('topic_id').sum()
-qr_src_geo_tgt = qr_src_geo_tgt.iloc[:, 1:]
-qr_src_geo_tgt = norm_dist_df(qr_src_geo_tgt)
-qr_src_geo_tgt = (qr_src_geo_tgt + world_pop) * 0.5
+qr_src_geo_tgt = qr_src_geo_align.multiply(qp_exp, axis='rows').groupby('topic_id').sum()
+
+# %%
+qr_src_geo_fk = qr_src_geo_tgt.iloc[:, 1:].sum('columns')
+qr_src_geo_tgt.iloc[:, 1:] *= 0.5
+qr_src_geo_tgt.iloc[:, 1:] += qr_src_geo_fk.apply(lambda k: world_pop * k * 0.5)
 qr_src_geo_tgt.head()
 
 # %% [markdown]
 # Make sure the rows are distributions:
 
 # %%
-qr_src_geo_tgt.sum('columns').describe()
-
-# %% [markdown]
-# Everything is 1, we're good to go!
+qr_src_geo_tgt = norm_dist_df(qr_src_geo_tgt)
 
 # %%
-output.save_table(qr_src_geo_tgt, f'task1-{DATA_MODE}-src-geo-target', parquet=True)
+output.save_table(qr_src_geo_tgt, f'task2-{DATA_MODE}-src-geo-target', parquet=True)
 
 # %% [markdown]
 # ## Gender
 #
-# Now we're going to grab the gender alignments.  Again, we ignore UNKNOWN.
+# Now we're going to grab the gender alignments.  Works the same way.
 
 # %%
 qr_gender_align = qr_join(gender_align)
 qr_gender_align.head()
 
 # %%
-qr_gender_tgt = qr_gender_align.iloc[:, 1:].groupby('topic_id').sum()
-qr_gender_tgt = norm_dist_df(qr_gender_tgt)
-qr_gender_tgt = (qr_gender_tgt + gender_tgt) * 0.5
+qr_gender_tgt = qr_gender_align.multiply(qp_exp, axis='rows').groupby('topic_id').sum()
+
+# %%
+qr_gender_fk = qr_gender_tgt.iloc[:, 1:].sum('columns')
+qr_gender_tgt.iloc[:, 1:] *= 0.5
+qr_gender_tgt.iloc[:, 1:] += qr_gender_fk.apply(lambda k: gender_tgt * k * 0.5)
 qr_gender_tgt.head()
 
 # %%
-output.save_table(qr_gender_tgt, f'task1-{DATA_MODE}-gender-target', parquet=True)
+qr_gender_tgt = norm_dist_df(qr_gender_tgt)
+
+# %%
+output.save_table(qr_gender_tgt, f'task2-{DATA_MODE}-gender-target', parquet=True)
 
 # %% [markdown]
 # ## Occupation
@@ -244,13 +256,13 @@ output.save_table(qr_gender_tgt, f'task1-{DATA_MODE}-gender-target', parquet=Tru
 # Occupation is more straightforward, since we don't have a global target to average with.  We do need to drop unknown.
 
 # %%
-qr_occ_align = qr_join(occ_align)
+qr_occ_align = qr_join(occ_align).multiply(qp_exp, axis='rows')
 qr_occ_tgt = qr_occ_align.iloc[:, 1:].groupby('topic_id').sum()
 qr_occ_tgt = norm_dist_df(qr_occ_tgt)
 qr_occ_tgt.head()
 
 # %%
-output.save_table(qr_occ_tgt, f'task1-{DATA_MODE}-occ-target', parquet=True)
+output.save_table(qr_occ_tgt, f'task2-{DATA_MODE}-occ-target', parquet=True)
 
 # %% [markdown]
 # ## Remaining Attributes
@@ -258,189 +270,218 @@ output.save_table(qr_occ_tgt, f'task1-{DATA_MODE}-occ-target', parquet=True)
 # The remaining attributes don't need any further processing, as they are completely known.
 
 # %%
-qr_age_align = qr_join(age_align)
+qr_age_align = qr_join(age_align).multiply(qp_exp, axis='rows')
 qr_age_tgt = norm_dist_df(qr_age_align.groupby('topic_id').sum())
-output.save_table(qr_age_tgt, f'task1-{DATA_MODE}-age-target', parquet=True)
+output.save_table(qr_age_tgt, f'task2-{DATA_MODE}-age-target', parquet=True)
 
 # %%
-qr_alpha_align = qr_join(alpha_align)
+qr_alpha_align = qr_join(alpha_align).multiply(qp_exp, axis='rows')
 qr_alpha_tgt = norm_dist_df(qr_alpha_align.groupby('topic_id').sum())
-output.save_table(qr_alpha_tgt, f'task1-{DATA_MODE}-alpha-target', parquet=True)
+output.save_table(qr_alpha_tgt, f'task2-{DATA_MODE}-alpha-target', parquet=True)
 
 # %%
-qr_langs_align = qr_join(langs_align)
+qr_langs_align = qr_join(langs_align).multiply(qp_exp, axis='rows')
 qr_langs_tgt = norm_dist_df(qr_langs_align.groupby('topic_id').sum())
-output.save_table(qr_langs_tgt, f'task1-{DATA_MODE}-langs-target', parquet=True)
+output.save_table(qr_langs_tgt, f'task2-{DATA_MODE}-langs-target', parquet=True)
 
 # %%
-qr_pop_align = qr_join(pop_align)
+qr_pop_align = qr_join(pop_align).multiply(qp_exp, axis='rows')
 qr_pop_tgt = norm_dist_df(qr_pop_align.groupby('topic_id').sum())
-output.save_table(qr_pop_tgt, f'task1-{DATA_MODE}-pop-target', parquet=True)
+output.save_table(qr_pop_tgt, f'task2-{DATA_MODE}-pop-target', parquet=True)
 
 # %% [markdown]
-# ### Geographic Alignment
+# ## Multidimensional Alignment
 #
-# Now that we've computed per-page target exposure, we're ready to set up the geographic alignment vectors for computing the per-*group* expected exposure with geographic data.
+# Now let's dive into the multidmensional alignment.  This is going to proceed a lot like the Task 1 alignment.
+
+# %% [markdown]
+# ### Dimension Definitions
 #
-# We're going to start by getting the alignments for relevant documents for each topic:
+# Let's define background distributions for some of our dimensions:
 
 # %%
-qp_geo_align = qrels.join(page_geo_align, on='page_id').set_index(['id', 'page_id'])
-qp_geo_align.index.names = ['q_id', 'page_id']
-qp_geo_align
+dim_backgrounds = {
+    'sub-geo': world_pop,
+    'src-geo': world_pop,
+    'gender': gender_tgt,
+}
 
 # %% [markdown]
-# Now we need to compute the per-query target exposures.  This starst with aligning our vectors:
+# Now we'll make a list of dimensions to treat with averaging:
 
 # %%
-qp_geo_exp, qp_geo_align = qp_exp.align(qp_geo_align, fill_value=0)
+DR = namedtuple('DimRec', ['name', 'align', 'background'], defaults=[None])
+avg_dims = [
+    DR(d.name, d.page_align_xr, xr.DataArray(dim_backgrounds[d.name], dims=[d.name]))
+    for d in dimensions
+    if d.name in dim_backgrounds
+]
+[d.name for d in avg_dims]
 
 # %% [markdown]
-# And now we can multiply the exposure vector by the alignment vector, and summing by topic - this is equivalent to the matrix-vector multiplication on a topic-by-topic basis.
+# And a list of dimensions to use as-is:
 
 # %%
-qp_aexp = qp_geo_align.multiply(qp_geo_exp, axis=0)
-q_geo_align = qp_aexp.groupby('q_id').sum()
+raw_dims = [
+    DR(d.name, d.page_align_xr)
+    for d in dimensions
+    if d.name not in dim_backgrounds
+]
+[d.name for d in raw_dims]
 
 # %% [markdown]
-# Now things get a *little* weird.  We want to average the empirical distribution with the world population to compute our fairness target.  However, we don't have empirical data on the distribution of articles that do or do not have geographic alignments.
+# Now: these dimension are in the original order - `dimensions` has the averaged dimensions before the non-averaged ones. **This is critical for the rest of the code to work.**
+
+# %% [markdown]
+# ### Data Subsetting
 #
-# Therefore, we are going to average only the *known-geography* vector with the world population.  This proceeds in N steps:
-#
-# 1. Normalize the known-geography matrix so its rows sum to 1.
-# 2. Average each row with the world population.
-# 3. De-normalize the known-geography matrix so it is in the original scale, but adjusted w/ world population
-# 4. Normalize the *entire* matrix so its rows sum to 1
-#
-# Let's go.
+# Also from Task 1.
 
 # %%
-qg_known = q_geo_align.drop(columns=['Unknown'])
+avg_cases = list(product(*[[True, False] for d in avg_dims]))
+avg_cases.pop()
+avg_cases
 
-# %% [markdown]
-# Normalize (adding a small value to avoid division by zero - affected entries will have a zero numerator anyway):
 
 # %%
-qg_ksums = qg_known.sum(axis=1)
-qg_kd = qg_known.divide(np.maximum(qg_ksums, 1.0e-6), axis=0)
-
-# %% [markdown]
-# Average:
-
-# %%
-qg_kd = (qg_kd + world_pop) * 0.5
-
-# %% [markdown]
-# De-normalize:
-
-# %%
-qg_known = qg_kd.multiply(qg_ksums, axis=0)
-
-# %% [markdown]
-# Recombine with the Unknown column:
-
-# %%
-q_geo_tgt = q_geo_align[['Unknown']].join(qg_known)
-
-# %% [markdown]
-# Normalize targets:
-
-# %%
-q_geo_tgt = q_geo_tgt.divide(q_geo_tgt.sum(axis=1), axis=0)
-q_geo_tgt
-
-# %% [markdown]
-# This is our group exposure target distributions for each query, for the geographic data.  We're now ready to set up the matrix.
-
-# %%
-train_geo_qtgt = q_geo_tgt.loc[train_topics['id']]
-eval_geo_qtgt = q_geo_tgt.loc[eval_topics['id']]
-
-# %% [markdown]
-# And save data.
-
-# %%
-save_table(train_geo_qtgt, 'task2-train-geo-targets')
-save_table(eval_geo_qtgt, 'task2-eval-geo-targets')
-
-
-# %% [markdown]
-# ### Intersectional Alignment
-#
-# Now we need to compute the intersectional targets for Task 2.  We're going to take a slightly different approach here, based on the intersectional logic for Task 1, because we've come up with better ways to write the code, but the effect is the same: only known aspects are averaged.
-#
-# We'll write a function very similar to the one for Task 1:
-
-# %%
-def query_xideal(qdf, ravel=True):
-    pages = qdf['page_id']
-    pages = pages[pages.isin(page_xalign.indexes['page'])]
-    q_xa = page_xalign.loc[pages.values, :, :]
+def case_selector(case):
+    def mksel(known):
+        if known:
+            # select all but 1st column
+            return slice(1, None, None)
+        else:
+            # select 1st column
+            return 0
     
-    # now we need to get the exposure for the pages, and multiply
-    p_exp = qp_exp.loc[qdf.name]
-    assert p_exp.index.is_unique
-    p_exp = xr.DataArray(p_exp, dims=['page'])
-    
-    # and we multiply!
-    q_xa = q_xa * p_exp
+    return tuple(mksel(k) for k in case)
 
-    # normalize into a matrix (this time we don't clear)
-    q_am = q_xa.sum(axis=0)
-    q_am = q_am / q_am.sum()
+
+# %% [markdown]
+# ### Background Averaging
+#
+# We're now going to define our background-averaging function; this is reused from the Task 1 alignment code.
+#
+# For each condition, we are going to proceed as follows:
+#
+# 1. Compute an appropriate intersectional background distribution (based on the dimensions that are "known")
+# 2. Select the subset of the target matrix with this known status
+# 3. Compute the sum of this subset
+# 4. Re-normalize the subset to sum to 1
+# 5. Compute a normalization table such that each coordinate in the distributions to correct sums to 1 (so multiplying this by the background distribution spreads the background across the other dimensions appropriately), and use this to spread the background distribution
+# 6. Average with the spread background distribution
+# 7. Re-normalize to preserve the original sum
+#
+# Let's define the whole process as a function:
+
+# %%
+def avg_with_bg(tm, verbose=False):
+    tm = tm.copy()
     
-    # compute fractions in each section - combined with q_am[0,0], this should be about 1
-    q_fk_all = q_am[1:, 1:].sum()
-    q_fk_geo = q_am[1:, :1].sum()
-    q_fk_gen = q_am[:1, 1:].sum()
+    tail_names = [d.name for d in raw_dims]
     
-    # known average
-    q_am[1:, 1:] *= 0.5
-    q_am[1:, 1:] += int_tgt * 0.5 * q_fk_all
+    # compute the tail mass for each coordinate (can be done once)
+    tail_mass = tm.sum(tail_names)
     
-    # known-geo average
-    q_am[1:, :1] *= 0.5
-    q_am[1:, :1] += geo_tgt_xa * 0.5 * q_fk_geo
+    # now some things don't have any mass, but we still need to distribute background distributions.
+    # solution: we impute the marginal tail distribution
+    # first compute it
+    tail_marg = tm.sum([d.name for d in avg_dims])
+    # then impute that where we don't have mass
+    tm_imputed = xr.where(tail_mass > 0, tm, tail_marg)
+    # and re-compute the tail mass
+    tail_mass = tm_imputed.sum(tail_names)
+    # and finally we compute the rescaled matrix
+    tail_scale = tm_imputed / tail_mass
+    del tm_imputed
     
-    # known-gender average
-    q_am[:1, 1:] *= 0.5
-    q_am[:1, 1:] += gender_tgt_xa * 0.5 * q_fk_gen
+    for case in avg_cases:
+        # for deugging: get names
+        known_names = [d.name for (d, known) in zip(avg_dims, case) if known]
+        if verbose:
+            print('processing known:', known_names)
+        
+        # Step 1: background
+        bg = reduce(operator.mul, [
+            d.background
+            for (d, known) in zip(avg_dims, case)
+            if known
+        ])
+        if not np.allclose(bg.sum(), 1.0):
+            warnings.warn('background distribution for {} sums to {}, expected 1'.format(known_names, bg.values.sum()))
+        
+        # Step 2: selector
+        sel = case_selector(case)
+        
+        # Steps 3: sum in preparation for normalization
+        c_sum = tm[sel].sum()
+        
+        # Step 5: spread the background
+        bg_spread = bg * tail_scale[sel] * c_sum
+        if not np.allclose(bg_spread.sum(), c_sum):
+            warnings.warn('rescaled background sums to {}, expected c_sum'.format(bg_spread.values.sum()))
+        
+        # Step 4 & 6: average with the background
+        tm[sel] *= 0.5
+        bg_spread *= 0.5
+        tm[sel] += bg_spread
+                        
+        if not np.allclose(tm[sel].sum(), c_sum):
+            warnings.warn('target distribution for {} sums to {}, expected {}'.format(known_names, tm[sel].values.sum(), c_sum))
+    
+    return tm
+
+
+# %% [markdown]
+# ### Computing Targets
+#
+# We're now ready to compute a multidimensional target. This works like the Task 1, with the difference that we are propagating work needed into the targets as well; the input will be series whose *index* is page IDs and values are the work levels.
+
+# %%
+def query_xalign(pages):
+    # compute targets to average
+    avg_pages = reduce(operator.mul, [d.align.loc[pages.index] for d in avg_dims])
+    raw_pages = reduce(operator.mul, [d.align.loc[pages.index] for d in raw_dims])
+    
+    # weight the left pages
+    pages.index.name = 'page'
+    qpw = xr.DataArray.from_series(pages)
+    avg_pages = avg_pages * qpw
+
+    # convert to query distribution
+    tgt = sum_outer(avg_pages, raw_pages)
+    tgt /= qpw.sum()
+
+    # average with background distributions
+    tgt = avg_with_bg(tgt)
     
     # and return the result
-    if ravel:
-        return pd.Series(q_am.values.ravel())
-    else:
-        return q_am
+    return tgt
 
 
 # %% [markdown]
-# Test this function out:
+# ### Applying Computations
+#
+# Now let's run this thing - compute all the target distributions:
 
 # %%
-query_xideal(qdf, ravel=False)
+q_ids = qp_exp.index.levels[0].copy()
+q_ids
+
+# %%
+q_tgts = [query_xalign(qp_exp.loc[q]) for q in tqdm(q_ids)]
+
+# %%
+q_tgts = xr.concat(q_tgts, q_ids)
+q_tgts
 
 # %% [markdown]
-# And let's go!
+# Save this to NetCDF (xarray's recommended format):
 
 # %%
-q_xtgt = qrels.groupby('id').progress_apply(query_xideal)
-q_xtgt
-
-# %%
-train_qtgt = q_xtgt.loc[train_topics['id']]
-eval_qtgt = q_xtgt.loc[eval_topics['id']]
+output.save_xarray(q_tgts, f'task2-{DATA_MODE}-int-targets')
 
 # %% [markdown]
-# And save our tables:
-
-# %%
-save_table(train_qtgt, 'task2-train-int-targets')
-
-# %%
-save_table(eval_qtgt, 'task2-eval-int-targets')
-
-# %% [markdown]
-# ## Task 2B - Equity of Underexposure
+# ## Task 2B - Equity of Underexposure - NOT YET DONE
 #
 # For 2022, we are using a diffrent version of the metric. **Equity of Underexposure** looks at each page's underexposure (system exposure is less than target exposure), and looks for underexposure to be equitably distributed between groups.
 #

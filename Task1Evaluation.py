@@ -41,9 +41,6 @@ import seaborn as sns
 import gzip
 import binpickle
 
-# %%
-from concurrent.futures import ThreadPoolExecutor
-
 # %% tags=[]
 tbl_dir = Path('data/metric-tables')
 

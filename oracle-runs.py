@@ -4,6 +4,8 @@ Produce TREC fair ranking runs from an oracle.
 This script assumes the data lives in a directory 'data'.  It loads the training
 topics and uses them as an oracle for producing rankings.
 
+Note that the unfairness support is *extremely slow* and not yet debugged.
+
 Usage:
     oracle-runs.py --task1 [options]
     oracle-runs.py --task2 [options]
@@ -15,6 +17,9 @@ Options:
         Write output to FILE.
     -p PREC, --precision=PREC
         Produce results with the specified precision [default: 0.9].
+    -U MIX, --unfairness=MIX
+        Produce results with the specified "unfairness" [default: 0.0].
+        Only works for task 2.
     --task1
         Create runs for Task 1.
     --task2
@@ -29,8 +34,12 @@ import logging
 from tqdm import tqdm
 from docopt import docopt
 
+import xarray as xr
 import pandas as pd
 import numpy as np
+from scipy.special import softmax
+
+from wptrec.dimension import agg_alignments, combine_alignments
 
 _log = logging.getLogger('oracle-runs')
 
@@ -52,7 +61,12 @@ def load_topics(opts):
     return topics
 
 
-def sample_docs(rng, meta, rel, n, prec):
+def load_alignments(opts):
+    from MetricInputs import dimensions
+    return [d.page_align_xr for d in dimensions]
+
+
+def sample_docs(rng, meta, rel, n, prec, weights=None):
     _log.debug('sampling %d rel items (n=%d, prec=%.2f)', len(rel), n, prec)
     n_rel = min(int(n * prec), len(rel))
     n_unrel = n - n_rel
@@ -61,11 +75,40 @@ def sample_docs(rng, meta, rel, n, prec):
     all = pd.Series(meta.index)
     unrel = all[~all.isin(rel)].values
 
-    samp_rel = rng.choice(rel, n_rel, replace=False)
+    samp_rel = rng.choice(rel, n_rel, replace=False, p=weights)
     samp_unrel = rng.choice(unrel, n_unrel, replace=False)
     samp = np.concatenate([samp_rel, samp_unrel])
     rng.shuffle(samp)
     return pd.Series(samp)
+
+
+def weigh_docs(docs, aligns, unfairness):
+    docs = docs.values
+    # extract per-doc alignments
+    aligns = [a.loc[docs] for a in aligns]
+
+    # compute overall alignment probabilities
+    p_a = agg_alignments(aligns, 'mean')
+    
+    # compute overall doc probabilities
+    p_d = 1.0 / len(docs)
+
+    # compute extremified concentrations
+    conc_p = softmax(p_a * 10000)
+    conc_p *= unfairness
+    uf_p_a = p_a * (1-unfairness) + conc_p
+
+    def dw(doc):
+        das = [a.loc[doc] * p_d / p_a for a in aligns]
+        das = combine_alignments(das)
+        das *= uf_p_a
+        return das.sum()
+
+    # compute individual document probabilities
+    doc_weights = [
+        dw(doc) for doc in tqdm(docs, desc='docs', leave=False)
+    ]
+    return pd.Series(docs, doc_weights)
 
 
 def task1_run(opts, meta, topics):
@@ -90,14 +133,22 @@ def task2_run(opts, meta, topics):
     rank_len = 20
     run_count = 100
     prec = float(opts['--precision'])
+    unf = float(opts['--unfairness'])
 
     rels = topics[['id', 'rel_docs']].set_index('id').explode('rel_docs')
+    
+    if unf > 0:
+        _log.info('unfairness parameter: %.3f', unf)
+        dims = load_alignments(opts)
+    else:
+        dims = None
 
-    def one_sample(df):
-        return sample_docs(rng, meta, df['rel_docs'], rank_len, prec)
+    def one_sample(df, weights):
+        return sample_docs(rng, meta, df['rel_docs'], rank_len, prec, weights)
     
     def multi_sample(df):
-        runs = dict((i+1, one_sample(df)) for i in tqdm(range(run_count), 'reps', leave=False))
+        weights = None if dims is None else weigh_docs(df['rel_docs'], dims, unf)
+        runs = dict((i+1, one_sample(df, weights)) for i in tqdm(range(run_count), 'reps', leave=False))
         rdf = pd.DataFrame(runs)
         rdf.columns.name = 'seq_no'
         rdf.index.name = 'rank'

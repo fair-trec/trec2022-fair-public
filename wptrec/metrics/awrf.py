@@ -7,7 +7,7 @@ import xarray as xr
 from scipy.spatial.distance import jensenshannon
 
 from .common import discount
-from ..dimension import combine_alignments, mean_outer
+from ..dimension import combine_alignments, mean_outer, agg_alignments
 
 class AWRFMetric:
     """
@@ -24,7 +24,7 @@ class AWRFMetric:
     fields, the query ID should be the **last** column.
     """
 
-    def __init__(self, qrels, dimensions, qtgts, progress=lambda x, **kwargs: x):
+    def __init__(self, qrels, dimensions, qtgts, target_len=500):
         """
         Construct Task 1 metric.
 
@@ -34,14 +34,14 @@ class AWRFMetric:
             dimensions(list):
                 A list of fairness dimensions.
             qtgts(xarray.DataArray):
-                The target distribution, with page IDs on the first column.
+                The target distribution, with topic IDs on the first dimension.
         """
         self.qrels = qrels
         self.dimensions = dimensions
         self.qtgts = qtgts
-        self.progress = progress
+        self.target_len = target_len
 
-    def qr_ndcg(self, qrun, qrels, tgt_n=500):
+    def qr_ndcg(self, qrun, qrels):
         """
         Compute the per-ranking nDCG metric for Task 1.
 
@@ -56,18 +56,18 @@ class AWRFMetric:
             float:
                 The nDCG score for the ranking.
         """
-        if len(qrun) > tgt_n:
+        if len(qrun) > self.target_len:
             raise ValueError(f'too many documents in query run')
 
         # length of run
         n = len(qrun)
         # max length of ideal run
-        rel_n = min(tgt_n, len(qrels))
+        rel_n = min(self.target_len, len(qrels))
 
         # compute 1/0 utility scores
         util = np.isin(qrun, qrels).astype('f4')
         # compute discounts
-        disc = discount(tgt_n)
+        disc = discount(self.target_len)
 
         # compute nDCG
         run_dcg = np.sum(util * disc[:n])
@@ -97,19 +97,13 @@ class AWRFMetric:
 
         disc = discount(n)
 
-        # work page by page for memory
-        ralign = None
-        for d, page in zip(self.progress(disc, leave=False), qrun):
-            p_align = combine_alignments([
-                d.page_align_xr.loc[page] for d in self.dimensions
-            ])
-            p_align *= d
-            if ralign is None:
-                ralign = p_align
-            else:
-                ralign += p_align
+        # look up the page alignments
+        arrays = [
+            d.page_align_xr.loc[qrun.values] for d in self.dimensions
+        ]
 
-        ralign /= np.sum(disc)
+        # combine and aggregate alignments
+        ralign = agg_alignments(arrays, 'mean', disc)
         
         # now we have an alignment vector - compute distance
         dist = jensenshannon(ralign.values.ravel(), qtgt.values.ravel())

@@ -1,86 +1,14 @@
 from pathlib import Path
+from re import A
 import numpy as np
 import pandas as pd
 
 from .common import discount, work_order
-
-def qr_exposure(qrun, page_align):
-    """
-    Compute the group exposure from a single ranking.
-
-    Args:
-        qrun(array-like):
-            The (ranked) document identifiers returned for a single query.
-        page_align(pandas.DataFrame):
-            A Pandas data frame whose index is page IDs and columns are page alignment
-            values for each fairness category.
-    Returns:
-        numpy.ndarray:
-            The group exposures for the ranking (unnormalized)
-    """
-
-    # length of run
-    n = len(qrun)
-    disc = discount(n)
-
-    # get the page alignments
-    ralign = page_align.reindex(qrun)
-    # discount and compute the weighted sum
-    ralign = ralign.multiply(disc, axis=0)
-    ralign = ralign.sum(axis=0)
-
-    assert len(ralign) == page_align.shape[1]
-
-    return ralign
+from ..dimension import agg_alignments
 
 
-def qrs_exposure(qruns, page_align):
-    """
-    Compute the group exposure from a sequence of rankings.
-
-    Args:
-        qruns(array-like):
-            A data frame of document identifiers for a single query.
-        page_align(pandas.DataFrame):
-            A Pandas data frame whose index is page IDs and columns are page alignment
-            values for each fairness category.
-    Returns:
-        pandas.Series:
-            Each group's expected exposure for the ranking.
-    """
-
-    rexp = qruns.groupby('seq_no')['page_id'].apply(qr_exposure, page_align=page_align)
-    exp = rexp.unstack().fillna(0).mean(axis=0)
-    assert len(exp) == page_align.shape[1]
-
-    return exp
-
-
-def qw_tgt_exposure(qw_counts: pd.Series) -> pd.Series:
-    """
-    Compute the target exposure for each work level for a query.
-
-    Args:
-        qw_counts(pandas.Series):
-            The number of articles the query has for each work level.
-    
-    Returns:
-        pandas.Series:
-            The per-article target exposure for each work level.
-    """
-    if 'id' == qw_counts.index.names[0]:
-        qw_counts = qw_counts.reset_index(level='id', drop=True)
-    qwc = qw_counts.reindex(work_order, fill_value=0).astype('i4')
-    tot = int(qwc.sum())
-    da = discount(tot)
-    qwp = qwc.shift(1, fill_value=0)
-    qwc_s = qwc.cumsum()
-    qwp_s = qwp.cumsum()
-    res = pd.Series(
-        [np.mean(da[s:e]) for (s, e) in zip(qwp_s, qwc_s)],
-        index=qwc.index
-    )
-    return res
+def _norm(x, lb, ub):
+    return (x - lb) / (ub - lb)
 
 
 class EELMetric:
@@ -94,54 +22,172 @@ class EELMetric:
 
         run.groupby('qid').apply(metric)
 
-    Since :meth:`__call__` extracts query ID directly from the name, this doesn't work if you have a
-    frame that you are grouping by more than one column.
+    Normalization, if enabled, is based https://github.com/fair-trec/fair-trec-tools/blob/master/eval/metrics.py.
     """
 
-    def __init__(self, qrels, page_align, page_work, qtgts):
+    def __init__(self, qrels, dimensions, qtgts, only_rel=True, target_len=20, normalize=False):
         """
         Construct Task 2 metric.
 
         Args:
             qrels(pandas.DataFrame):
                 The data frame of relevant documents, indexed by query ID.
-            page_align(pandas.DataFrame):
-                The data frame of page alignments for fairness criteria, indexed by page ID.
-            qtgts(pandas.DataFrame):
-                The data frame of query target exposures, indexed by query ID.
+            dimensions(list):
+                A list of fairness dimensions.
+            qtgts(xarray.DataArray):
+                The target distribution, with topic IDs on the first dimension.
+            only_rel(bool):
+                Whether to only allow relevant documents, or all documents, to contribute
+                to system exposure.
+            target_len(int):
+                The number of items each ranking should have.
+            normalize(bool):
+                Whether to attempt to normalize the metric scores.
+                CURRENTLY BROKEN, DO NOT USE.
         """
         self.qrels = qrels
-        self.page_align = page_align
-        self.page_work = page_work
+        self.dimensions = dimensions
         self.qtgts = qtgts
+        self.only_rel = only_rel
+        self.target_len = target_len
+        self.normalize = normalize
 
-    @classmethod
-    def load(cls, qrels, qtgts, page_align, page_work, dir='data/metric-tables'):
-        dir = Path(dir)
-        qrel_df = pd.read_csv(dir / f'{qrels}.csv.gz', index_col='id')
-        qtgt_df = pd.read_csv(dir / f'{qtgts}.csv.gz', index_col='id')
-        pa_df = pd.read_csv(dir / f'{page_align}.csv.gz', index_col='page')
-        pw_df = pd.read_parquet(dir / f'{page_work}.parquet')
-        return cls(qrel_df, pa_df, pw_df, qtgt_df)
+    def qrs_exposure(self, qruns: pd.DataFrame, qrels):
+        """
+        Compute the unnormalized group exposure from a sequence of rankings.
+
+        Args:
+            qruns(array-like):
+                A data frame of document identifiers for a single query.
+            page_align(pandas.DataFrame):
+                A Pandas data frame whose index is page IDs and columns are page alignment
+                values for each fairness category.
+        Returns:
+            pandas.Series:
+                Each group's expected exposure for the ranking.
+        """
+
+        # get the relevance data
+        rel_col = qruns['page_id'].isin(qrels['page_id'])
+        
+        # add to data frame & get position exposures
+        qrw = qruns.assign(is_rel=rel_col)
+        qrw = qrw.groupby('seq_no').apply(lambda df: pd.DataFrame({
+            'page_id': df['page_id'],
+            'is_rel': df['is_rel'],
+            'discount': discount(len(df)),
+        }).reset_index(drop=True))
+
+        # we only count relevant documents (as per EE paper)
+        # this is a *change* from the 2021 Task 2 metric implementation!
+        if self.only_rel:
+            qrw = qrw[qrw['is_rel']]
+        
+        # we compute system exposure as the discount-weighted mean of the
+        # page alignment matrices.
+        arrays = [
+            d.page_align_xr.loc[qrw['page_id'].values] for d in self.dimensions
+        ]
+        # we sum *within* a ranking, and average *across* rankings.
+        exp = agg_alignments(arrays, 'sum', qrw['discount'].values)
+        exp /= qruns['seq_no'].nunique()
+
+        return exp
     
-    def __call__(self, sequence):
+    def __call__(self, sequence, *, details=False):
         if isinstance(sequence.name, tuple):
             qid = sequence.name[-1]
         else:
             qid = sequence.name
-        qtgt = self.qtgts.loc[qid]
+        tgt_exp = self.qtgts.loc[qid]
 
-        s_exp = qrs_exposure(sequence, self.page_align)
-        avail_exp = np.sum(discount(50))
-        tgt_exp = qtgt * avail_exp
+        qrels = self.qrels.loc[qid]
+        s_exp = self.qrs_exposure(sequence, qrels)
+        
+        # tgt exposure is on a per-exposure-unit basis - scale up based on sequence len
+        # get the weights for a full-length sequence
+        tgt_weights = discount(self.target_len)
+        # compute the total exposure weight for a full-length sequence
+        avail_exp = np.sum(tgt_weights)
+        # and scale up the target exposures
+        tgt_exp = tgt_exp * avail_exp
+        
+        # compute the delta
         delta = s_exp - tgt_exp
 
+        # prepare for computations - unravell multiple dimensions
+        s_exp = np.ravel(s_exp)
+        tgt_exp = np.ravel(tgt_exp)
+        delta = np.ravel(delta)
+        n_dims = len(s_exp)
+
+        # compute metric values
         ee_disp = np.dot(s_exp, s_exp)
         ee_rel = np.dot(s_exp, tgt_exp)
         ee_loss = np.dot(delta, delta)
 
-        return pd.Series({
-            'EE-L': ee_loss,
-            'EE-D': ee_disp,
-            'EE-R': ee_rel,
-        })
+        res = None
+
+        if self.normalize:
+            res = {
+                'EE-L-raw': ee_loss,
+                'EE-D-raw': ee_disp,
+                'EE-R-raw': ee_rel,
+            }
+
+            ## EE-D
+            # Lower bound: all available exposure equally distributed
+            ee_d_lb = np.square(avail_exp / n_dims) * n_dims
+
+            # Upper bound: all exposure concentrated on one element
+            ee_d_ub = np.square(avail_exp)
+
+            ee_disp = _norm(ee_disp, ee_d_lb, ee_d_ub)
+            res.update({
+                'EE-D': ee_disp,
+                'EE-D-lb': ee_d_lb,
+                'EE-D-ub': ee_d_ub,
+            })
+
+            ## EE-R
+            # Lower bound: all exposure to non-relevant groups
+            # loose, since we don't have any fully non-relevant groups
+            ee_r_lb = 0
+
+            # Upper bound: exposure perfectly aligned with relevance
+            ee_r_ub = np.dot(tgt_exp, tgt_exp)
+
+            ee_rel = _norm(ee_rel, ee_r_lb, ee_r_ub)
+
+            res.update({
+                'EE-R': ee_rel,
+                'EE-R-lb': ee_r_lb,
+                'EE-R-ub': ee_r_ub,
+            })
+
+            ## EE-L
+            # Lower bound: no loss
+            ee_l_lb = 0
+
+            # Upper bound (loose): put all exposure on a group w/ infinitesimal exposure
+            # this is because moving any mass from that group another would reduce
+            # both squared differences, reducing overall loss
+            ee_l_ub = ee_r_ub + ee_d_ub
+
+            ee_loss = _norm(ee_loss, ee_l_lb, ee_l_ub)
+
+            res.update({
+                'EE-L': ee_loss,
+                'EE-L-lb': ee_l_lb,
+                'EE-L-ub': ee_l_ub,
+            })
+    
+        if res is None or not details:
+            res = {
+                'EE-L': ee_loss,
+                'EE-D': ee_disp,
+                'EE-R': ee_rel,
+            }
+        
+        return pd.Series(res)
+        
