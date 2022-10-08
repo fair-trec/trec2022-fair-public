@@ -93,8 +93,12 @@ UNKNOWN = '@UNKNOWN'
 #
 # Bonus is that, through careful logic, we get a progress bar.
 
+# %% tags=["parameters"]
+# META_FILE_TAG = 'discrete'
+META_FILE_TAG = 'discrete_assessed'
+
 # %%
-page_path = Path('data/trec_2022_articles_discrete.json.gz')
+page_path = Path(f'data/trec_2022_articles_{META_FILE_TAG}.json.gz')
 page_file_size = page_path.stat().st_size
 binarysize(page_file_size)
 

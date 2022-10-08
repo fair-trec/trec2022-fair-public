@@ -2,6 +2,7 @@ from pathlib import Path
 from re import A
 import numpy as np
 import pandas as pd
+import xarray as xr
 
 from .common import discount, work_order
 from ..dimension import agg_alignments
@@ -78,11 +79,18 @@ class EELMetric:
             'discount': discount(len(df)),
         }).reset_index(drop=True))
 
+        if not qrw['is_rel'].any():
+            # there is no relevant data - zero exposure
+            dims = self.qtgts.dims[1:]
+            zed = xr.zeros_like(self.qtgts[0])
+            del zed.coords['topic_id']
+            return zed
+
         # we only count relevant documents (as per EE paper)
         # this is a *change* from the 2021 Task 2 metric implementation!
         if self.only_rel:
             qrw = qrw[qrw['is_rel']]
-        
+
         # we compute system exposure as the discount-weighted mean of the
         # page alignment matrices.
         arrays = [
@@ -94,7 +102,8 @@ class EELMetric:
 
         return exp
     
-    def __call__(self, sequence, *, details=False):
+    def __call__(self, sequence, *, normalize=False, details=False):
+        normalize = normalize or self.normalize
         if isinstance(sequence.name, tuple):
             qid = sequence.name[-1]
         else:
@@ -128,7 +137,7 @@ class EELMetric:
 
         res = None
 
-        if self.normalize:
+        if normalize:
             res = {
                 'EE-L-raw': ee_loss,
                 'EE-D-raw': ee_disp,

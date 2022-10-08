@@ -40,6 +40,7 @@ class AWRFMetric:
         self.dimensions = dimensions
         self.qtgts = qtgts
         self.target_len = target_len
+        self.known_pages = self.dimensions[0].page_align_df.index
 
     def qr_ndcg(self, qrun, qrels):
         """
@@ -97,9 +98,13 @@ class AWRFMetric:
 
         disc = discount(n)
 
+        is_known = qrun.isin(self.known_pages).values
+        known = qrun.values[is_known]
+        disc = disc[is_known]
+
         # look up the page alignments
         arrays = [
-            d.page_align_xr.loc[qrun.values] for d in self.dimensions
+            d.page_align_xr.loc[known] for d in self.dimensions
         ]
 
         # combine and aggregate alignments
@@ -121,7 +126,7 @@ class AWRFMetric:
         qrel = self.qrels.loc[qid]
         qtgt = self.qtgts.loc[qid]
 
-        ndcg = self.qr_ndcg(run, qrel, 500)
+        ndcg = self.qr_ndcg(run, qrel)
         assert ndcg >= 0
         assert ndcg <= 1
         awrf = self.qr_awrf(run, qtgt)

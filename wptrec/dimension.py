@@ -25,7 +25,25 @@ class FairDim:
 
     @property
     def py_name(self):
-        return self.name.replace('-', '_')
+        return self.name.replace('-', '_')   
+
+    def alignments(self, pages):
+        "Get alignments for a page."
+        align = self.page_align_xr.reindex({'page': pages}).copy()
+        missing = align.isnull().all(self.name)
+        if not missing.any():
+            return align
+
+        assert missing.dims == ('page',)
+        coords = self.page_align_xr.coords[self.name]
+        row = xr.DataArray(np.zeros(len(coords)), coords={self.name: coords})
+        if self.has_unknown:
+            row.loc['@UNKNOWN'] = 1
+        else:
+            row[:] = 1 / len(row)
+        
+        align[missing] = row
+        return align
 
     def __str__(self):
         return f'<dimension "{self.name}": {self.page_align_df.shape[1]} levels>'

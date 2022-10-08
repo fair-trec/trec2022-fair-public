@@ -23,7 +23,7 @@
 # This notebook can be run in two modes: 'train', to process the training topics, and 'eval' for the eval topics.
 
 # %% tags=["parameters"]
-DATA_MODE = 'train'
+DATA_MODE = 'eval'
 
 # %% [markdown]
 # ## Setup
@@ -568,3 +568,5 @@ q_tgts
 
 # %%
 output.save_xarray(q_tgts, f'task1-{DATA_MODE}-int-targets')
+
+# %%

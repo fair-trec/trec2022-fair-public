@@ -19,7 +19,7 @@
 # This notebook contains the evaluation for Task 1 of the TREC Fair Ranking track.
 
 # %% tags=["parameters"]
-DATA_MODE = 'train'
+DATA_MODE = 'eval'
 
 # %% tags=[]
 import wptrec
@@ -67,6 +67,10 @@ rng = seedbank.numpy_rng()
 # %% [markdown]
 # Import metric code:
 
+# %%
+# %load_ext autoreload
+# %autoreload 2
+
 # %% tags=[]
 import wptrec.metrics as metrics
 from wptrec.trecdata import scan_runs
@@ -85,7 +89,7 @@ from MetricInputs import qrels, dimensions
 target = xr.open_dataarray(tbl_dir / f'task1-{DATA_MODE}-int-targets.nc')
 
 # %% tags=[]
-metric = metrics.AWRFMetric(qrels.set_index('topic_id'), dimensions, target, progress=tqdm)
+metric = metrics.AWRFMetric(qrels.set_index('topic_id'), dimensions, target)
 
 # %% [markdown]
 # ## Importing Data
@@ -94,7 +98,7 @@ metric = metrics.AWRFMetric(qrels.set_index('topic_id'), dimensions, target, pro
 # Let's load the runs now:
 
 # %% tags=[]
-runs = pd.DataFrame.from_records(row for (task, rows) in scan_runs('runs/2022') if task == 1 for row in rows)
+runs = pd.DataFrame.from_records(row for rows in scan_runs(1, 'runs/2022') for row in rows)
 runs
 
 # %% [markdown] tags=[]
@@ -198,7 +202,8 @@ topic_range
 # And now we combine scores with these results to return to participants.
 
 # %% tags=[]
-ret_dir = Path('results')
+ret_dir = Path('results') / 'coordinators'
+ret_dir.mkdir(exist_ok=True)
 for system, runs in rank_awrf.groupby('run_name'):
     aug = runs.join(topic_range).reset_index().drop(columns=['run_name'])
     fn = ret_dir / f'{system}.tsv'

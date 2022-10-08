@@ -5,8 +5,9 @@ import gzip
 _log = logging.getLogger(__name__)
 
 
-def scan_runs(dir='runs'):
-    path = Path(dir)
+def scan_runs(task, dir='runs'):
+    dn = 'coordinators' if task == 1 else 'editors'
+    path = Path(dir) / dn
     for file in path.glob('*.gz'):
         _log.info('scanning %s', file)
         run_name = file.stem
@@ -17,14 +18,8 @@ def scan_runs(dir='runs'):
             rows=[]
             for lno, line in enumerate(gzf):
                 line = line.strip().split('\t')
-                if lno == 0:
-                    if len(line) < 3:
-                        task = 1
-                    else:
-                        task = 2
-
-                    if line[0] == 'id':
-                        continue  # header row
+                if line[0] == 'id':
+                    continue  # header row
                 
                 if task == 1:
                     topic_id = int(line[0])
@@ -60,4 +55,4 @@ def scan_runs(dir='runs'):
                         'page_id': page_id
                     })
 
-            yield task, rows
+            yield rows

@@ -19,7 +19,7 @@
 # This notebook contains the evaluation for Task 1 of the TREC Fair Ranking track.
 
 # %% tags=["parameters"]
-DATA_MODE = 'train'
+DATA_MODE = 'eval'
 
 # %% tags=[]
 import wptrec
@@ -107,7 +107,7 @@ metric = metrics.EELMetric(qrels.set_index('topic_id'), dimensions, target)
 # Let's load the runs now:
 
 # %% tags=[]
-runs = pd.DataFrame.from_records(row for (task, rows) in scan_runs('runs/2022') if task == 2 for row in rows)
+runs = pd.DataFrame.from_records(row for rows in scan_runs(2, 'runs/2022') for row in rows)
 runs
 
 # %% tags=[]
@@ -119,7 +119,7 @@ runs.head()
 # We are now ready to compute the metric for each (system,topic) pair.  Let's go!
 
 # %% tags=[]
-rank_exp = runs.groupby(['run_name', 'topic_id']).progress_apply(metric, details=True)
+rank_exp = runs.groupby(['run_name', 'topic_id']).progress_apply(metric)
 # rank_exp = rank_awrf.unstack()
 rank_exp
 
@@ -151,6 +151,7 @@ run_score_ci
 
 # %%
 run_score_full = run_scores.join(run_score_ci)
+run_score_full.sort_values('EE-L', ascending=False, inplace=True)
 run_score_full
 
 # %% [markdown]
@@ -174,12 +175,24 @@ topic_range
 # And now we combine scores with these results to return to participants.
 
 # %% tags=[]
-ret_dir = Path('results')
+ret_dir = Path('results') / 'editors'
+ret_dir.mkdir(exist_ok=True)
 for system, s_runs in rank_exp.groupby('run_name'):
     aug = s_runs.join(topic_range).reset_index().drop(columns=['run_name'])
     fn = ret_dir / f'{system}.tsv'
     log.info('writing %s', fn)
     aug.to_csv(fn, sep='\t', index=False)
+
+# %% [markdown]
+# ## Charts and Relationships
+#
+# Now let's look at some overall distributions, etc.
+
+# %%
+sns.displot(x='EE-L', data=run_scores)
+
+# %%
+sns.scatterplot(x='EE-D', y='EE-R', data=run_scores)
 
 # %% [markdown]
 # ## Further Analysis
