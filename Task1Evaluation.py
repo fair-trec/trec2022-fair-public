@@ -38,6 +38,7 @@ import xarray as xr
 from scipy.stats import bootstrap
 import matplotlib.pyplot as plt
 import seaborn as sns
+from functools import reduce
 import gzip
 import binpickle
 
@@ -67,13 +68,9 @@ rng = seedbank.numpy_rng()
 # %% [markdown]
 # Import metric code:
 
-# %%
-# %load_ext autoreload
-# %autoreload 2
-
 # %% tags=[]
 import wptrec.metrics as metrics
-from wptrec.trecdata import scan_runs
+from wptrec.trecdata import scan_runs, scan_teams
 
 # %% [markdown]
 # And finally import the metric itself.  For Task 1, this uses:
@@ -101,6 +98,16 @@ metric = metrics.AWRFMetric(qrels.set_index('topic_id'), dimensions, target)
 runs = pd.DataFrame.from_records(row for rows in scan_runs(1, 'runs/2022') for row in rows)
 runs
 
+# %% [markdown]
+# And the teams:
+
+# %%
+team_runs = scan_teams('runs/2022')
+team_runs
+
+# %%
+run_team = team_runs.set_index('run')
+
 # %% [markdown] tags=[]
 # ## Computing Metrics
 #
@@ -123,6 +130,7 @@ rank_awrf[rank_awrf['Score'].isnull()]
 # %% tags=[]
 run_scores = rank_awrf.groupby('run_name').mean()
 run_scores.sort_values('Score', ascending=False, inplace=True)
+run_scores = run_scores.join(run_team)
 run_scores
 
 
@@ -176,7 +184,7 @@ plt.savefig('figures/task1-score-dist.pdf')
 plt.show()
 
 # %% tags=[]
-sns.relplot(x='nDCG', y='AWRF', data=run_scores)
+sns.relplot(x='nDCG', y='AWRF', hue='team', data=run_scores)
 sns.rugplot(x='nDCG', y='AWRF', data=run_scores)
 plt.savefig('figures/task1-ndcg-awrf.pdf')
 plt.show()
@@ -204,10 +212,171 @@ topic_range
 # %% tags=[]
 ret_dir = Path('results') / 'coordinators'
 ret_dir.mkdir(exist_ok=True)
-for system, runs in rank_awrf.groupby('run_name'):
-    aug = runs.join(topic_range).reset_index().drop(columns=['run_name'])
+for system, s_runs in rank_awrf.groupby('run_name'):
+    aug = s_runs.join(topic_range).reset_index().drop(columns=['run_name'])
     fn = ret_dir / f'{system}.tsv'
     log.info('writing %s', fn)
     aug.to_csv(fn, sep='\t', index=False)
+
+# %% [markdown]
+# ## Individual Dimensions
+#
+# We're now going to process the results on an individual dimension basis.
+
+# %%
+res1d_d = {}
+dim_loop = tqdm(dimensions, desc='dims', leave=False)
+for dim in dim_loop:
+    dim_loop.set_postfix_str(dim.name)
+    t1d = pd.read_parquet(tbl_dir / f'task1-{DATA_MODE}-{dim.name}-target.parquet')
+    t1d = xr.DataArray(t1d, dims=['topic_id', dim.name])
+    m1d = metrics.AWRFMetric(qrels.set_index('topic_id'), [dim], t1d)
+    res1d_d[dim.name] = runs.groupby(['run_name', 'topic_id'])['page_id'].progress_apply(m1d)
+
+# %%
+res1d = pd.concat(res1d_d, names=['dim'])
+res1d = res1d.unstack().reset_index()
+res1d
+
+# %% [markdown]
+# Now let's group things to get per-dimension metrics!
+
+# %%
+rr_1d = res1d.groupby(['dim', 'run_name'])['Score'].mean()
+rr_1d = rr_1d.unstack('dim')
+rr_1d
+
+# %%
+df_1d = run_scores[['Score']].rename(columns={'Score': 'Overall'}).join(rr_1d)
+df_1d.sort_values('Overall', inplace=True, ascending=False)
+df_fmt = df_1d.style.highlight_max(props='font-weight: bold')
+df_fmt
+
+# %%
+df_1d_fn = Path('figures/task1-single.tex')
+style = df_1d.style.highlight_max(props='font: bold;').format(lambda x: '%.4f' % (x,))
+style = style.format_index(axis=0, escape='latex')
+style = style.hide(names=True)
+df_tex = style.to_latex()
+df_1d_fn.write_text(df_tex)
+print(df_tex)
+
+
+# %% [markdown]
+# ## Attribute Subset Performance
+#
+# We also want to look at the peformance over *subsets* of the original attributes.  For this, we need two pieces:
+#
+# - The dimensions
+# - The reduced target
+#
+# We'll get the reduced target by marginalizing.  Let's make a function to get dimensions and reduced targets:
+
+# %%
+def subset_dims(dims):
+    return [d for d in dimensions if d.name in dims]
+
+
+# %%
+def subset_tgt(dims):
+    names = [d.name for d in dimensions if d.name not in dims]
+    return target.sum(names)
+
+
+# %% [markdown]
+# ### Gender and Geography
+#
+# Last year, we used subject geography and gender.  Let's generate metric results from those.
+
+# %%
+geo_gender_metric = metrics.AWRFMetric(qrels.set_index('topic_id'), subset_dims(['sub-geo', 'gender']), subset_tgt(['sub-geo', 'gender']))
+
+# %%
+geo_gender_res = runs.groupby(['run_name', 'topic_id'])['page_id'].progress_apply(geo_gender_metric)
+
+# %% [markdown]
+# Now show the results per system:
+
+# %%
+geo_gender_rr = geo_gender_res.unstack().groupby('run_name').mean()
+geo_gender_rr.sort_values('Score', inplace=True)
+geo_gender_rr
+
+# %% [markdown]
+# ### Internal Properties
+#
+# This year, several of our properties are ‘internal’: that is, they primarily refer to things that matter within the Wikipedia platform, not broader social concerns.
+#
+# Let's see how the systems perform on those.
+
+# %%
+internal_names = ['alpha', 'age', 'pop', 'langs']
+internal_dims = subset_dims(internal_names)
+internal_tgt = subset_tgt(internal_names)
+
+# %%
+internal_metric = metrics.AWRFMetric(qrels.set_index('topic_id'), internal_dims, internal_tgt)
+
+# %%
+internal_res = runs.groupby(['run_name', 'topic_id'])['page_id'].progress_apply(internal_metric)
+
+# %% [markdown]
+# Now show the results per system:
+
+# %%
+internal_rr = internal_res.unstack().groupby('run_name').mean()
+internal_rr.sort_values('Score', inplace=True)
+internal_rr
+
+# %% [markdown]
+# ### Demographic Properties
+#
+# Let's see performance on the other ones (demographic properties):
+
+# %%
+demo_names = [d.name for d in dimensions if d.name not in internal_names]
+demo_dims = subset_dims(demo_names)
+demo_tgt = subset_tgt(demo_names)
+
+# %%
+demo_metric = metrics.AWRFMetric(qrels.set_index('topic_id'), demo_dims, demo_tgt)
+
+# %%
+demo_res = runs.groupby(['run_name', 'topic_id'])['page_id'].progress_apply(demo_metric)
+
+# %% [markdown]
+# Now show the results per system:
+
+# %%
+demo_rr = demo_res.unstack().groupby('run_name').mean()
+demo_rr.sort_values('Score', inplace=True)
+demo_rr
+
+# %% [markdown]
+# ### Subset Scores
+
+# %%
+subsets = {
+    'Overall': run_scores,
+    '2021': geo_gender_rr,
+    'Internal': internal_rr,
+    'Demographic': demo_rr,
+}
+
+# %%
+ss_cols = [df[['Score']].rename(columns={'Score': name}) for (name, df) in subsets.items()]
+ss_df = reduce(lambda df1, df2: df1.join(df2), ss_cols)
+ss_df.sort_values('Overall', inplace=True, ascending=False)
+ss_fmt = ss_df.style.highlight_max(props='font-weight: bold;')
+ss_fmt
+
+# %%
+ss_fn = Path('figures/task1-subsets.tex')
+style = ss_df.style.highlight_max(props='font: bold;').format(lambda x: '%.4f' % (x,))
+style = style.format_index(axis=0, escape='latex')
+style = style.hide(names=True)
+ss_tex = style.to_latex()
+ss_fn.write_text(ss_tex)
+print(ss_tex)
 
 # %%

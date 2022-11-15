@@ -98,13 +98,23 @@ class AWRFMetric:
 
         disc = discount(n)
 
-        is_known = qrun.isin(self.known_pages).values
-        known = qrun.values[is_known]
+        try:
+            qrun = qrun.values
+        except AttributeError:
+            pass  # already a numpy array
+        
+        # find everything we can
+        idx = self.known_pages.get_indexer_for(qrun)
+        is_known = idx >= 0
+
+        # filter results
+        known_idx = idx[is_known]
+        # known = qrun[is_known]
         disc = disc[is_known]
 
         # look up the page alignments
         arrays = [
-            d.page_align_xr.loc[known] for d in self.dimensions
+            d.page_align_xr[known_idx].astype('float64') for d in self.dimensions
         ]
 
         # combine and aggregate alignments

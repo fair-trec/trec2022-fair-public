@@ -1,8 +1,25 @@
 import logging
 from pathlib import Path
 import gzip
+import re
+import pandas as pd
 
 _log = logging.getLogger(__name__)
+
+
+def scan_teams(dir = 'runs'):
+    path = Path(dir) / 'metadata'
+    run_re = re.compile(r'^Run (.*):')
+    records = []
+    for file in path.glob('confirm.fair.*'):
+        team = file.suffix[1:]
+        with file.open('r', encoding='utf8') as mf:
+            for line in mf:
+                m = run_re.match(line)
+                if m:
+                    records.append((team, m.group(1)))
+    
+    return pd.DataFrame.from_records(records, columns=['team', 'run'])
 
 
 def scan_runs(task, dir='runs'):

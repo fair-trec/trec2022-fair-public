@@ -94,7 +94,7 @@ class EELMetric:
         # we compute system exposure as the discount-weighted mean of the
         # page alignment matrices.
         arrays = [
-            d.page_align_xr.loc[qrw['page_id'].values] for d in self.dimensions
+            d.page_align_xr.loc[qrw['page_id'].values].astype('float64') for d in self.dimensions
         ]
         # we sum *within* a ranking, and average *across* rankings.
         exp = agg_alignments(arrays, 'sum', qrw['discount'].values)

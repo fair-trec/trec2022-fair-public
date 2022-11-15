@@ -177,7 +177,7 @@ def _sum_outer_ufunc(A, B):
     
     C = A.reshape(sz_a, n) @ B.reshape(sz_b, n).T
 
-    C /= n
+    # C /= n
 
     rshp = A.shape[:-len(B.shape)] + B.shape[:-1]
     return C.reshape(rshp)
